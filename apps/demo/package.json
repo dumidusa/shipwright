@@ -1,0 +1,22 @@
+{
+  "name": "shipwright",
+  "version": "1.0.0",
+  "description": "Webhook-triggered blue/green deployer: pulls image, health-checks, swaps nginx upstream, zero downtime",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dumidusa/shipwright.git"
+  },
+  "author": "@dumidusa",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/dumidusa/shipwright/issues"
+  },
+  "homepage": "https://github.com/dumidusa/shipwright#readme",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
