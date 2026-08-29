@@ -54,6 +54,7 @@ jobs:
   trigger-deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+    if: ${{ vars.VPS_URL != '' }}
     steps:
       - name: Sign and send deploy webhook
         env:
