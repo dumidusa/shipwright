@@ -16,6 +16,7 @@ jobs:
       packages: write
     outputs:
       git_sha: ${{ steps.sha.outputs.short }}
+      has_vps: ${{ steps.check.outputs.has_vps }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,6 +24,17 @@ jobs:
       - name: Set short SHA
         id: sha
         run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if VPS_URL is set
+        id: check
+        env:
+          VPS_URL: ${{ secrets.VPS_URL }}
+        run: |
+          if [ -n "$VPS_URL" ]; then
+            echo "has_vps=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_vps=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install deps
         working-directory: apps/demo
@@ -54,7 +66,7 @@ jobs:
   trigger-deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: ${{ secrets.VPS_URL != '' }}
+    if: ${{ needs.build-and-push.outputs.has_vps == 'true' }}
     steps:
       - name: Sign and send deploy webhook
         env:
