@@ -62,10 +62,10 @@ async function stopContainer(slot) {
 }
 
 async function healthCheck(slot, { retries = 10, delayMs = 1000 } = {}) {
-  const { port } = SLOTS[slot];
+  const { name } = SLOTS[slot];
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/health`);
+      const res = await fetch(`http://${name}:3000/health`);
       if (res.ok) return true;
     } catch {
       // not ready yet, keep retrying
