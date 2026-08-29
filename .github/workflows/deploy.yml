@@ -1,73 +1,70 @@
 name: Build and Deploy
 
 on:
-    push:
-        branches: [main]
+  push:
+    branches: [main]
 
 env:
-    REGISTRY: ghcr.io
-    IMAGE_NAME: ${{ github.repository }}-demo
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-demo
 
 jobs:
-    build-and-push:
-        runs-on: ubuntu-latest
-        permissions:
-            contents: read
-            packages: write
-        outputs:
-            git_sha: ${{ steps.sha.outputs.short }}
-        steps:
-            - name: Checkout
-              uses: actions/checkouts@v4
-            
-            - name: Set short SHA
-              id: sha
-              run: echo "short=$(git rev-parse --short HEAd)" >> "$GITHUB_OUTPUT"
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      git_sha: ${{ steps.sha.outputs.short }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-            - name: Install deps
-              working-directory: app/demo
-              run: npm install
-            
-            - name: Lint / sanity check
-              working-directory: app/demo
-              run: node -e "require('./src/index.js')" &
-                   sleep 1 && curl -sf http://localhost:3000/health
+      - name: Set short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-            - name: Log in to GHCR
-              uses: docker/login-action@v3
-              with:
-                registry: ${{ env.REGISTRY }}
-                username: ${{ github.actor }}
-                password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install deps
+        working-directory: apps/demo
+        run: npm install
 
-            - name: Build and push image
-              uses: docker/build-push-action@v6
-              with: 
-                context: apps/demo
-                push: true
-                build-args: | 
-                    GIT_SHA=${{ steps.sha.outputs.short }}
-                tags: |
-                    ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-                    ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.sha.outputs.short }}
-    
-    trigger-deploy:
-        needs: build-and-push
-        runs-on: ubuntu-latest
-        steps:
-            - name: Sign and deploy webhook
-              env:
-                GIT_SHA: ${{ needs.build-and-push.outputs.git_sha }}
-                SECRET: ${{ secrets.DEPLOY_WEBHOOK_SECRET }}
-                VPS_URL: ${{ secrets.VPS_URL }}
-              run: | 
-                BODY="{\"gitSha\":\"${GIT_SHA}\"}"
-                SIGNATURE="sha256=$(echo -n "$BODY" | openssl dgst -sha256 -hmc "$SECRET" | sed 's/^.* //')"
+      - name: Lint / sanity check
+        working-directory: apps/demo
+        run: node -e "require('./src/index.js')" &
+          sleep 1 && curl -sf http://localhost:3000/health
 
-                curl -sf -X POST "${VPS_URL}/deploy" \
-                    -H "Content-Type: application/json" \
-                    -H "X-Signature:  ${SIGNATURE}" \
-                    -d "$BODY"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/demo
+          push: true
+          build-args: |
+            GIT_SHA=${{ steps.sha.outputs.short }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.sha.outputs.short }}
 
+  trigger-deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sign and send deploy webhook
+        env:
+          GIT_SHA: ${{ needs.build-and-push.outputs.git_sha }}
+          SECRET: ${{ secrets.DEPLOY_WEBHOOK_SECRET }}
+          VPS_URL: ${{ secrets.VPS_URL }}
+        run: |
+          BODY="{\"gitSha\":\"${GIT_SHA}\"}"
+          SIGNATURE="sha256=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
 
+          curl -sf -X POST "${VPS_URL}/deploy" \
+            -H "Content-Type: application/json" \
+            -H "X-Signature: ${SIGNATURE}" \
+            -d "$BODY"
