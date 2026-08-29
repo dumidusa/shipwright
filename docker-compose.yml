@@ -1,0 +1,52 @@
+version: "3.9"
+
+networks:
+  shipwright-net:
+    name: shipwright-net
+
+volumes:
+  deployer-data:
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: shipwright-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/upstream.d:/etc/nginx/upstream.d
+    networks:
+      - shipwright-net
+    depends_on:
+      - demo-blue
+    restart: unless-stopped
+
+  demo-blue:
+    build: ./apps/demo
+    container_name: demo-blue
+    networks:
+      - shipwright-net
+    environment:
+      - GIT_SHA=seed
+    restart: unless-stopped
+
+  deployer:
+    build: ./services/deployer
+    container_name: shipwright-deployer
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./nginx/upstream.d:/shared/upstream.d
+      - deployer-data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - PORT=5050
+      - DEPLOY_WEBHOOK_SECRET=${DEPLOY_WEBHOOK_SECRET}
+      - DEMO_IMAGE=${DEMO_IMAGE:-shipwright-demo}
+      - DOCKER_NETWORK=shipwright-net
+      - NGINX_CONTAINER=shipwright-nginx
+      - UPSTREAM_DIR=/shared/upstream.d
+    networks:
+      - shipwright-net
+    restart: unless-stopped
