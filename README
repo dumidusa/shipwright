@@ -1,0 +1,207 @@
+# shipwright
+
+A minimal, self-hosted zero-downtime deployment system. Push to `main`, and GitHub Actions builds your app, publishes it to GHCR, and triggers a signed webhook that pulls the new image, health-checks it, and swaps nginx to point at it — with automatic rollback if the new version fails its health check.
+
+No Kubernetes, no managed PaaS, no monthly platform fees. Just Docker, nginx, and a small Node.js deployer service running on any VPS.
+
+**Live demo:** `http://54.167.49.60/`
+
+---
+
+## How it works
+
+```
+┌─────────────┐    push to main    ┌──────────────────┐
+│   Your Mac  │ ─────────────────► │  GitHub Actions   │
+└─────────────┘                    └────────┬──────────┘
+                                             │ build + push image
+                                             ▼
+                                    ┌──────────────────┐
+                                    │       GHCR        │
+                                    │  (container reg.) │
+                                    └────────┬──────────┘
+                                             │ signed webhook
+                                             ▼
+┌─────────────────────────── Your VPS ───────────────────────────┐
+│                                                                  │
+│   ┌────────┐      ┌───────────┐      ┌─────────────────────┐  │
+│   │ nginx  │◄─────│  deployer │─────►│  docker.sock         │  │
+│   │  :80   │      │   :5050   │      │  (pull/run/health)   │  │
+│   └───┬────┘      └───────────┘      └─────────────────────┘  │
+│       │                                                         │
+│       ▼                                                         │
+│  ┌──────────┐   ┌───────────┐                                  │
+│  │demo-blue │   │demo-green │   ◄── only one is "active" at    │
+│  │ (active) │   │ (standby) │       a time; nginx routes to it │
+│  └──────────┘   └───────────┘                                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Blue/green deploy flow:**
+
+1. A push to `main` triggers GitHub Actions, which builds `apps/demo` and pushes it to `ghcr.io/<you>/shipwright-demo`, tagged with both `latest` and the short git SHA.
+2. Actions signs a request body with HMAC-SHA256 and POSTs it to your VPS's `/deploy` endpoint.
+3. The deployer verifies the signature, then:
+   - Pulls the new image
+   - Starts it in the **inactive** slot (if `blue` is live, it starts `green`, and vice versa)
+   - Health-checks the new container over the internal Docker network
+   - If healthy: rewrites nginx's upstream config to point at the new slot and reloads nginx (zero downtime — nginx never drops a connection)
+   - Waits briefly to let in-flight requests drain, then stops the old container
+   - If unhealthy: stops the new container and leaves the old one running untouched (automatic rollback)
+4. Every deploy attempt (success, failure, or rollback) is logged to a small SQLite database, queryable via `GET /deploys`.
+
+---
+
+## Project structure
+
+```
+shipwright/
+├── .github/workflows/deploy.yml   # CI/CD: build, push to GHCR, trigger deploy
+├── apps/demo/                     # Example Express app being deployed
+│   ├── Dockerfile
+│   ├── package.json
+│   └── src/index.js               # /, /health, /version endpoints
+├── nginx/
+│   ├── nginx.conf                 # Reverse proxy config
+│   └── upstream.d/active.conf     # Auto-rewritten by the deployer on each swap
+├── services/deployer/              # The deployment orchestrator
+│   ├── Dockerfile
+│   ├── package.json
+│   └── src/
+│       ├── index.js               # Express server, routes
+│       ├── webhook.js             # HMAC-SHA256 signature verification
+│       ├── rollout.js             # Pull → start → health check → swap → cleanup
+│       └── db.js                  # SQLite deploy log
+├── docker-compose.yml             # Wires nginx + demo-blue + deployer together
+├── .env.example                   # Template for required secrets
+└── .gitignore
+```
+
+---
+
+## Local setup
+
+**Requirements:** Docker + Docker Compose, Node.js 20+ (only needed if running the deployer standalone outside Docker).
+
+```bash
+git clone https://github.com/dumidusa/shipwright.git
+cd shipwright
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```bash
+DEPLOY_WEBHOOK_SECRET=<a long random string>
+DEMO_IMAGE=ghcr.io/<your-github-username>/shipwright-demo
+```
+
+Start everything:
+
+```bash
+docker compose up --build -d
+docker compose ps   # confirm nginx, demo-blue, and deployer are all "Up"
+```
+
+Verify:
+
+```bash
+curl http://localhost/          # → demo-app running, sha=seed ...
+curl http://localhost:5050/health   # → {"status":"ok","activeSlot":"blue"}
+```
+
+---
+
+## Triggering a manual deploy
+
+The deployer only accepts requests signed with your `DEPLOY_WEBHOOK_SECRET`:
+
+```bash
+BODY='{"gitSha":"test1"}'
+SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$DEPLOY_WEBHOOK_SECRET" | sed 's/^.* //')
+
+curl -X POST http://localhost:5050/deploy \
+  -H "Content-Type: application/json" \
+  -H "X-Signature: sha256=$SIG" \
+  -d "$BODY"
+```
+
+Watch it happen live:
+
+```bash
+docker compose logs -f deployer
+```
+
+Check the deploy history:
+
+```bash
+curl http://localhost:5050/deploys
+```
+
+---
+
+## Deploying for real (CI/CD)
+
+1. **Spin up a VPS** (any provider — AWS EC2, Hetzner, DigitalOcean). Install Docker on it, clone the repo, and set up `.env` as above.
+
+2. **Open the required ports** in your firewall / security group:
+   - `80` — nginx (public traffic)
+   - `5050` — deployer (needs to be reachable by GitHub's runners to receive the webhook)
+   - `22` — SSH (for you)
+
+3. **Start the stack on the server:**
+   ```bash
+   docker compose up --build -d
+   ```
+
+4. **Set GitHub repository secrets** (`Settings → Secrets and variables → Actions`):
+   | Secret | Value |
+   |---|---|
+   | `DEPLOY_WEBHOOK_SECRET` | Same value as your server's `.env` |
+   | `VPS_URL` | `http://<your-server-ip>:5050` |
+
+5. **Push to `main`.** GitHub Actions will build, publish to GHCR, and trigger a real deploy to your live server automatically.
+
+---
+
+## Endpoints
+
+**Deployer (`:5050`)**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Current status and active slot (`blue`/`green`) |
+| `GET` | `/deploys` | Last 20 deploy attempts, with status and duration |
+| `POST` | `/deploy` | Trigger a rollout. Requires `X-Signature` HMAC header. Body: `{"gitSha": "..."}` |
+
+**Demo app (proxied via nginx `:80`)**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Basic status line with current git SHA |
+| `GET` | `/health` | `{"status":"ok"}` |
+| `GET` | `/version` | Current SHA and start time |
+
+---
+
+## Design notes
+
+- **Why blue/green instead of rolling restarts?** A single-container restart causes a brief window where the app is down or half-restarted. Blue/green keeps the old version fully serving traffic until the new one is proven healthy, so there's no dropped request window.
+- **Why SQLite for deploy logs?** It's a single-file database with zero setup — appropriate for a small deploy history on a single VPS. Would swap for Postgres if this ever ran across multiple servers.
+- **Why HMAC signing on the webhook?** Anyone who discovers `/deploy` shouldn't be able to trigger arbitrary deploys. The shared secret proves the request genuinely came from your own CI pipeline.
+- **Rollback is automatic, not manual.** If the new container fails its health check, it's torn down immediately and the old one is left untouched — no half-deployed state is possible.
+
+---
+
+## What I'd add next
+
+- Terraform for provisioning the VPS itself (currently manual)
+- Prometheus/Grafana for deploy metrics and container health over time
+- Support for more than one app per host (currently hardcoded to a single demo app)
+- A tiny web dashboard for `/deploys` instead of raw JSON
+
+---
+
+## License
+
+MIT
