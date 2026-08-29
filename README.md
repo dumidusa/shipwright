@@ -23,13 +23,13 @@ No Kubernetes, no managed PaaS, no monthly platform fees. Just Docker, nginx, an
                                              │ signed webhook
                                              ▼
 ┌─────────────────────────── Your VPS ───────────────────────────┐
-│                                                                  │
-│   ┌────────┐      ┌───────────┐      ┌─────────────────────┐  │
-│   │ nginx  │◄─────│  deployer │─────►│  docker.sock         │  │
-│   │  :80   │      │   :5050   │      │  (pull/run/health)   │  │
-│   └───┬────┘      └───────────┘      └─────────────────────┘  │
-│       │                                                         │
-│       ▼                                                         │
+│                                                                │
+│   ┌────────┐      ┌───────────┐      ┌─────────────────────┐   │
+│   │ nginx  │◄─────│  deployer │─────►│  docker.sock        │   │
+│   │  :80   │      │   :5050   │      │  (pull/run/health)  │   │
+│   └───┬────┘      └───────────┘      └─────────────────────┘   │
+│       │                                                        │
+│       ▼                                                        │
 │  ┌──────────┐   ┌───────────┐                                  │
 │  │demo-blue │   │demo-green │   ◄── only one is "active" at    │
 │  │ (active) │   │ (standby) │       a time; nginx routes to it │
